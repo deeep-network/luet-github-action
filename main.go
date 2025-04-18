@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"strconv"
 	"strings"
@@ -146,7 +147,7 @@ func repositoryPackages(repo string) (client.SearchResult, error) {
 	var searchResult client.SearchResult
 
 	fmt.Println("Retrieving remote repository packages")
-	tmpdir, err := os.MkdirTemp(os.TempDir(), "ci")
+	tmpdir, err := ioutil.TempDir(os.TempDir(), "ci")
 	if err != nil {
 		return searchResult, fmt.Errorf("failed to create temp directory: %w", err)
 	}
@@ -191,13 +192,13 @@ func metaWorker(i int, wg *sync.WaitGroup, c <-chan luetClient.Package, o opData
 	defer wg.Done()
 
 	for p := range c {
-		tmpdir, err := os.MkdirTemp(os.TempDir(), "ci")
+		tmpdir, err := ioutil.TempDir(os.TempDir(), "ci")
 		if err != nil {
 			errChan <- fmt.Errorf("worker %d failed to create temp dir: %w", i, err)
 			continue
 		}
 
-		unpackdir, err := os.MkdirTemp(os.TempDir(), "ci")
+		unpackdir, err := ioutil.TempDir(os.TempDir(), "ci")
 		if err != nil {
 			os.RemoveAll(tmpdir)
 			errChan <- fmt.Errorf("worker %d failed to create unpack dir: %w", i, err)
@@ -492,13 +493,13 @@ func retryDownload(img, dest string, t int, errChan chan<- error) {
 }
 
 func downloadImg(img, dst string, errChan chan<- error) {
-	tmpdir, err := os.MkdirTemp(os.TempDir(), "ci")
+	tmpdir, err := ioutil.TempDir(os.TempDir(), "ci")
 	if err != nil {
 		errChan <- fmt.Errorf("failed to create temp dir for %s: %w", img, err)
 		return
 	}
 
-	unpackdir, err := os.MkdirTemp(os.TempDir(), "ci")
+	unpackdir, err := ioutil.TempDir(os.TempDir(), "ci")
 	if err != nil {
 		os.RemoveAll(tmpdir)
 		errChan <- fmt.Errorf("failed to create unpack dir for %s: %w", img, err)
