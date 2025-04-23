@@ -9,45 +9,39 @@ import (
 	utils "github.com/mudler/luet/pkg/api/client/utils"
 )
 
-//goaction:description Final container registry repository
-var finalRepo = os.Getenv("FINAL_REPO")
+var (
+	finalRepo = flag.String("repo", os.Getenv("FINAL_REPO"), "Final container registry repository")
+	outputDir = flag.String("output", "${PWD}/build", "Output directory for built packages")
 
-//goaction:description Docker username to log into
-var dockerUsername = os.Getenv("DOCKER_USERNAME")
+	luetVersion = flag.String("luet-version", "0.20.10", "Luet version to use")
+	luetArch    = flag.String("luet-arch", "amd64", "Architecture for Luet binary")
 
-//goaction:description Docker password to log into
-var dockerPassword = os.Getenv("DOCKER_PASSWORD")
-
-//goaction:description Optional docker endpoint, e.g. quay.io
-var dockerEndpoint = os.Getenv("DOCKER_ENDPOINT")
-
-var outputdir = flag.String("output", "${PWD}/build", "output where to store packages")
+	dockerUsername = flag.String("docker-username", os.Getenv("DOCKER_USERNAME"), "Docker username for authentication")
+	dockerPassword = flag.String("docker-password", os.Getenv("DOCKER_PASSWORD"), "Docker password for authentication")
+	dockerEndpoint = flag.String("docker-endpoint", os.Getenv("DOCKER_ENDPOINT"), "Docker registry endpoint")
+)
 
 func main() {
 	flag.Parse()
 
-	finalRepo = strings.ToLower(finalRepo)
-	if finalRepo == "" {
-		finalRepo = "quay.io/nerdnode/packages"
-	}
-
 	// Setup Luet
-	utils.RunSH("dependencies", "curl -L https://github.com/mudler/luet/releases/download/0.36.0/luet-0.36.0-linux-amd64 --output luet")
+	utils.RunSH("dependencies", fmt.Sprintf("curl -L https://github.com/mudler/luet/releases/download/%s/luet-%s-linux-%s --output luet",
+		*luetVersion, *luetVersion, *luetArch))
 	utils.RunSH("dependencies", "chmod +x luet")
 	utils.RunSH("dependencies", "mv luet /usr/bin/luet && mkdir -p /etc/luet/repos.conf.d/")
 	utils.RunSH("dependencies", "curl -L https://raw.githubusercontent.com/mocaccinoOS/repository-index/master/packages/luet.yml --output /etc/luet/repos.conf.d/luet.yml")
 
 	// Login to Docker if credentials are provided
-	if dockerUsername != "" && dockerPassword != "" {
+	if *dockerUsername != "" && *dockerPassword != "" {
 		out, err := utils.RunSHOUT("login", fmt.Sprintf(
 			"echo %s | docker login -u '%s' --password-stdin '%s'",
-			dockerPassword, dockerUsername, dockerEndpoint),
+			*dockerPassword, *dockerUsername, *dockerEndpoint),
 		)
 		if err != nil {
 			fmt.Println(string(out))
 			os.Exit(1)
 		} else {
-			fmt.Printf("Successfully logged in to Docker registry %s as user %s\n", dockerEndpoint, dockerUsername)
+			fmt.Printf("Successfully logged in to Docker registry %s as user %s\n", *dockerEndpoint, *dockerUsername)
 		}
 	}
 
@@ -69,13 +63,13 @@ func main() {
 func buildPackages() error {
 	fmt.Println("Building all packages...")
 
-	err := utils.RunSH("build", fmt.Sprintf("sudo luet build --all --destination %s", *outputdir))
+	err := utils.RunSH("build", fmt.Sprintf("sudo luet build --all --destination %s", *outputDir))
 	if err != nil {
 		return fmt.Errorf("failed to build packages: %w", err)
 	}
 
 	// Set permissions on output directory
-	err = utils.RunSH("build perms", "chmod -R 777 "+*outputdir)
+	err = utils.RunSH("build perms", "chmod -R 777 "+*outputDir)
 	if err != nil {
 		return fmt.Errorf("failed to set permissions on output directory: %w", err)
 	}
@@ -85,11 +79,12 @@ func buildPackages() error {
 
 func createRepo() error {
 	fmt.Println("Creating repository...")
+	finalRepo := strings.ToLower(*finalRepo)
 
 	cmd := fmt.Sprintf(
 		"sudo luet create-repo --output %s --packages %s --type docker --push-images --force-push",
 		finalRepo,
-		*outputdir,
+		*outputDir,
 	)
 
 	err := utils.RunSH("create_repo", cmd)
