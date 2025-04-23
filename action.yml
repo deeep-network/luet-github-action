@@ -3,143 +3,58 @@
 name: luet-github-action
 description: Github Action for building luet packages and repositories
 inputs:
-  build:
-    default: "false"
-    description: "Build missing packages, or specified"
-    required: false
-  downloadMeta:
-    default: "false"
-    description: "Download packages metadata"
-    required: false
-  downloadAllMeta:
-    default: "false"
-    description: "Download All packages metadata"
-    required: false
-  downloadFromList:
-    default: "false"
-    description: "Download All packages metadata by listing all available image tags"
-    required: false
-  fromIndex:
-    default: "false"
-    description: "Download metadata from index"
-    required: false
-  buildx:
-    default: "false"
-    description: "Install docker buildx"
-    required: false
-  createRepo:
-    default: "false"
-    description: "create repository"
-    required: false
-  onlyMissing:
-    default: "false"
-    description: "Build only missing packages"
-    required: false
-  pushCache:
-    default: "false"
-    description: "Pushing cache images while building"
-    required: false
-  pushFinalImages:
-    default: "false"
-    description: "Pushing final images while building"
-    required: false
-  pushFinalImagesRepository:
-    description: "Specify a different final repo"
-    required: false
-  tree:
-    default: ${PWD}/packages
-    description: "create repository"
-    required: false
-  platform:
-    description: "buildx platform"
-    required: false
-  luetVersion:
-    default: 0.20.10
-    description: "default Luet version"
-    required: false
-  luetArch:
-    default: amd64
-    description: "default Luet arch"
-    required: false
-  values:
-    description: "Values file"
-    required: false
-  maxMetadataDownloads:
-    default: "5"
-    description: "How many metadata to download in parallel"
+  repo:
+    description: "Final container registry repository"
     required: false
   output:
     default: ${PWD}/build
-    description: "output where to store packages"
+    description: "Output directory for built packages"
     required: false
-  skipPackages:
-    description: "A space separated list of packages to skip"
+  luet-version:
+    default: "0.36.0"
+    description: "Luet version to use"
     required: false
-  revisionSHA:
-    default: "false"
-    description: "Revision SHA"
+  luet-arch:
+    default: "amd64"
+    description: "Architecture for Luet binary"
     required: false
-  FINAL_REPO:
-    description: "Final container registry repository"
-    required: false
-  CURRENT_PACKAGE:
-    description: "Current package to build"
-    required: false
-  REPOSITORY_NAME:
-    description: "Repository Name"
-    required: false
-  REPOSITORY_TYPE:
-    description: "Repository Type"
-    required: false
-  PULL_REPOSITORY:
-    description: "Optional pull cache repository"
-    required: false
-  DOCKER_USERNAME:
+  docker-username:
     description: "Docker username to log into"
     required: false
-  DOCKER_PASSWORD:
+  docker-password:
     description: "Docker password to log into"
     required: false
-  DOCKER_ENDPOINT:
+  docker-endpoint:
     description: "Optional docker endpoint, e.g. quay.io"
     required: false
-  GITHUB_SHA:
-    description: "The current SHA for Github commit"
+  FINAL_REPO:
+    description: "Final container registry repository (legacy, use repo instead)"
+    required: false
+  DOCKER_USERNAME:
+    description: "Docker username to log into (legacy, use docker-username instead)"
+    required: false
+  DOCKER_PASSWORD:
+    description: "Docker password to log into (legacy, use docker-password instead)"
+    required: false
+  DOCKER_ENDPOINT:
+    description: "Optional docker endpoint (legacy, use docker-endpoint instead)"
     required: false
 runs:
   using: docker
   image: Dockerfile
   env:
     FINAL_REPO: "${{ inputs.FINAL_REPO }}"
-    CURRENT_PACKAGE: "${{ inputs.CURRENT_PACKAGE }}"
-    REPOSITORY_NAME: "${{ inputs.REPOSITORY_NAME }}"
-    REPOSITORY_TYPE: "${{ inputs.REPOSITORY_TYPE }}"
-    PULL_REPOSITORY: "${{ inputs.PULL_REPOSITORY }}"
     DOCKER_USERNAME: "${{ inputs.DOCKER_USERNAME }}"
     DOCKER_PASSWORD: "${{ inputs.DOCKER_PASSWORD }}"
     DOCKER_ENDPOINT: "${{ inputs.DOCKER_ENDPOINT }}"
-    GITHUB_SHA: "${{ inputs.GITHUB_SHA }}"
   args:
-  - "-build=${{ inputs.build }}"
-  - "-downloadMeta=${{ inputs.downloadMeta }}"
-  - "-downloadAllMeta=${{ inputs.downloadAllMeta }}"
-  - "-downloadFromList=${{ inputs.downloadFromList }}"
-  - "-fromIndex=${{ inputs.fromIndex }}"
-  - "-buildx=${{ inputs.buildx }}"
-  - "-createRepo=${{ inputs.createRepo }}"
-  - "-onlyMissing=${{ inputs.onlyMissing }}"
-  - "-pushCache=${{ inputs.pushCache }}"
-  - "-pushFinalImages=${{ inputs.pushFinalImages }}"
-  - "-pushFinalImagesRepository=${{ inputs.pushFinalImagesRepository }}"
-  - "-tree=${{ inputs.tree }}"
-  - "-platform=${{ inputs.platform }}"
-  - "-luetVersion=${{ inputs.luetVersion }}"
-  - "-luetArch=${{ inputs.luetArch }}"
-  - "-values=${{ inputs.values }}"
-  - "-maxMetadataDownloads=${{ inputs.maxMetadataDownloads }}"
+  - "-repo=${{ inputs.repo || inputs.FINAL_REPO }}"
   - "-output=${{ inputs.output }}"
-  - "-skipPackages=${{ inputs.skipPackages }}"
-  - "-revisionSHA=${{ inputs.revisionSHA }}"
+  - "-luet-version=${{ inputs.luet-version }}"
+  - "-luet-arch=${{ inputs.luet-arch }}"
+  - "-docker-username=${{ inputs.docker-username || inputs.DOCKER_USERNAME }}"
+  - "-docker-password=${{ inputs.docker-password || inputs.DOCKER_PASSWORD }}"
+  - "-docker-endpoint=${{ inputs.docker-endpoint || inputs.DOCKER_ENDPOINT }}"
 branding:
   icon: box
   color: purple
