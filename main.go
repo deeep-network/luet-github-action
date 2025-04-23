@@ -13,7 +13,7 @@ var (
 	finalRepo = flag.String("repo", os.Getenv("FINAL_REPO"), "Final container registry repository")
 	outputDir = flag.String("output", "${PWD}/build", "Output directory for built packages")
 
-	luetVersion = flag.String("luet-version", "0.20.10", "Luet version to use")
+	luetVersion = flag.String("luet-version", "0.36.0", "Luet version to use")
 	luetArch    = flag.String("luet-arch", "amd64", "Architecture for Luet binary")
 
 	dockerUsername = flag.String("docker-username", os.Getenv("DOCKER_USERNAME"), "Docker username for authentication")
