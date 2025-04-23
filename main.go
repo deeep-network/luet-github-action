@@ -63,7 +63,7 @@ func main() {
 func buildPackages() error {
 	fmt.Println("Building all packages...")
 
-	err := utils.RunSH("build", fmt.Sprintf("sudo luet build --all --destination %s", *outputDir))
+	err := utils.RunSH("build", fmt.Sprintf("luet build --all --destination %s", *outputDir))
 	if err != nil {
 		return fmt.Errorf("failed to build packages: %w", err)
 	}
@@ -82,7 +82,7 @@ func createRepo() error {
 	finalRepo := strings.ToLower(*finalRepo)
 
 	cmd := fmt.Sprintf(
-		"sudo luet create-repo --output %s --packages %s --type docker --push-images --force-push",
+		"luet create-repo --output %s --packages %s --type docker --push-images --force-push",
 		finalRepo,
 		*outputDir,
 	)
