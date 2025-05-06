@@ -401,9 +401,6 @@ func buildPackage(s string) error {
 	cmd := []string{
 		"luet",
 		"build",
-		"--only-target-package",
-		"--pull",
-		"--from-repositories",
 		"--live-output",
 	}
 
