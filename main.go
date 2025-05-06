@@ -335,37 +335,48 @@ func build() error {
 			}
 		}
 
-		// Create a map to track packages by their transformed names to avoid duplicates
-		transformedPackages := make(map[string]client.Package)
+		// Create a map to track processed package strings to avoid duplicates
+		processedPackages := make(map[string]bool)
 
-		// Process all packages and transform hooks/ to services/ as needed
+		// First pass: Transform packages and collect unique packages to process
+		uniquePackages := []client.Package{}
+
 		for _, p := range packs.Packages {
 			packageStr := p.String()
+			transformedStr := packageStr
 
-			// Transform hooks/ to services/ if needed
-			if strings.HasPrefix(packageStr, "hooks/") {
-				transformedStr := strings.Replace(packageStr, "hooks/", "services/", 1)
+			// Transform pkg/ to services/ if needed
+			if strings.HasPrefix(packageStr, "pkg/") {
+				transformedStr = strings.Replace(packageStr, "pkg/", "services/", 1)
 
-				// Parse the transformed string to get a proper Package object
+				// Parse the transformed string to check if it's valid
 				transformedPack, err := cmdhelpers.ParsePackageStr(transformedStr)
-				if err == nil {
-					transformedPackage := client.Package{Name: transformedPack.Name, Category: transformedPack.Category}
-					transformedPackages[transformedStr] = transformedPackage
+				if err != nil {
+					// If transformation is invalid, revert to original
+					transformedStr = packageStr
 				} else {
-					// If transformation parsing fails, use original
-					transformedPackages[packageStr] = p
+					// Create a new package with the transformed category but keeping original metadata
+					p = client.Package{
+						Name:     transformedPack.Name,
+						Category: transformedPack.Category,
+						Version:  p.Version, // Preserve version
+						// Copy any other fields from p that need to be preserved
+					}
 				}
-			} else {
-				// Use original if no transformation needed
-				transformedPackages[packageStr] = p
+			}
+
+			// Only process this package if we haven't seen it before
+			if !processedPackages[transformedStr] {
+				processedPackages[transformedStr] = true
+				uniquePackages = append(uniquePackages, p)
 			}
 		}
 
-		// Now check which transformed packages are missing
-		for _, transformedPkg := range transformedPackages {
-			if !client.Packages(currentPackages.Packages).Exist(transformedPkg) ||
-				len(skipP) != 0 && !client.Packages(skipP).Exist(client.Package{Name: transformedPkg.Name, Category: transformedPkg.Category}) {
-				missingPackages = append(missingPackages, transformedPkg)
+		// Now check which unique packages are missing
+		for _, p := range uniquePackages {
+			if !client.Packages(currentPackages.Packages).Exist(p) ||
+				(len(skipP) != 0 && !client.Packages(skipP).Exist(client.Package{Name: p.Name, Category: p.Category})) {
+				missingPackages = append(missingPackages, p)
 			}
 		}
 
@@ -376,10 +387,16 @@ func build() error {
 
 		var buildErrors int
 		for _, p := range missingPackages {
-			err := buildPackage(p.String())
+			// Here we need to ensure we're using the transformed path for building
+			packageStr := p.String()
+			if strings.HasPrefix(packageStr, "pkg/") {
+				packageStr = strings.Replace(packageStr, "pkg/", "services/", 1)
+			}
+
+			err := buildPackage(packageStr)
 			if err != nil {
 				buildErrors++
-				fmt.Printf("Error building package %s: %v\n", p.String(), err)
+				fmt.Printf("Error building package %s: %v\n", packageStr, err)
 			}
 		}
 
