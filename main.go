@@ -335,10 +335,37 @@ func build() error {
 			}
 		}
 
+		// Create a map to track packages by their transformed names to avoid duplicates
+		transformedPackages := make(map[string]client.Package)
+
+		// Process all packages and transform hooks/ to services/ as needed
 		for _, p := range packs.Packages {
-			if !client.Packages(currentPackages.Packages).Exist(p) ||
-				len(skipP) != 0 && !client.Packages(skipP).Exist(client.Package{Name: p.Name, Category: p.Category}) {
-				missingPackages = append(missingPackages, p)
+			packageStr := p.String()
+
+			// Transform hooks/ to services/ if needed
+			if strings.HasPrefix(packageStr, "hooks/") {
+				transformedStr := strings.Replace(packageStr, "hooks/", "services/", 1)
+
+				// Parse the transformed string to get a proper Package object
+				transformedPack, err := cmdhelpers.ParsePackageStr(transformedStr)
+				if err == nil {
+					transformedPackage := client.Package{Name: transformedPack.Name, Category: transformedPack.Category}
+					transformedPackages[transformedStr] = transformedPackage
+				} else {
+					// If transformation parsing fails, use original
+					transformedPackages[packageStr] = p
+				}
+			} else {
+				// Use original if no transformation needed
+				transformedPackages[packageStr] = p
+			}
+		}
+
+		// Now check which transformed packages are missing
+		for _, transformedPkg := range transformedPackages {
+			if !client.Packages(currentPackages.Packages).Exist(transformedPkg) ||
+				len(skipP) != 0 && !client.Packages(skipP).Exist(client.Package{Name: transformedPkg.Name, Category: transformedPkg.Category}) {
+				missingPackages = append(missingPackages, transformedPkg)
 			}
 		}
 
@@ -401,6 +428,9 @@ func buildPackage(s string) error {
 	cmd := []string{
 		"luet",
 		"build",
+		"--only-target-package",
+		"--pull",
+		"--from-repositories",
 		"--live-output",
 	}
 
