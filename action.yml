@@ -4,43 +4,43 @@ name: luet-github-action
 description: Github Action for building luet packages and repositories
 inputs:
   build:
-    default: false
+    default: "false"
     description: "Build missing packages, or specified"
     required: false
   downloadMeta:
-    default: false
+    default: "false"
     description: "Download packages metadata"
     required: false
   downloadAllMeta:
-    default: false
+    default: "false"
     description: "Download All packages metadata"
     required: false
   downloadFromList:
-    default: false
+    default: "false"
     description: "Download All packages metadata by listing all available image tags"
     required: false
   fromIndex:
-    default: false
+    default: "false"
     description: "Download metadata from index"
     required: false
   buildx:
-    default: false
+    default: "false"
     description: "Install docker buildx"
     required: false
   createRepo:
-    default: false
+    default: "false"
     description: "create repository"
     required: false
   onlyMissing:
-    default: false
+    default: "false"
     description: "Build only missing packages"
     required: false
   pushCache:
-    default: false
+    default: "false"
     description: "Pushing cache images while building"
     required: false
   pushFinalImages:
-    default: false
+    default: "false"
     description: "Pushing final images while building"
     required: false
   pushFinalImagesRepository:
@@ -76,7 +76,7 @@ inputs:
     description: "A space separated list of packages to skip"
     required: false
   revisionSHA:
-    default: false
+    default: "false"
     description: "Revision SHA"
     required: false
   FINAL_REPO:
@@ -104,6 +104,7 @@ inputs:
     description: "Optional docker endpoint, e.g. quay.io"
     required: false
   GITHUB_SHA:
+    description: "The SHA value of the Github commit"
     required: false
 runs:
   using: docker

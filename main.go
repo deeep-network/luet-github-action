@@ -28,6 +28,8 @@ type resultData struct {
 	Exists  bool
 }
 
+var defaultRetries int = 3
+
 // The action can:
 // 1: Build packages. Singularly (by specifying CURRENT_PACKAGE), or all of them.
 //
@@ -95,9 +97,8 @@ func main() {
 	flag.Parse()
 
 	finalRepo = strings.ToLower(finalRepo)
-	//	utils.RunSH("dependencies", "apk add curl")
-	//	utils.RunSH("dependencies", "apk add docker")
-	//	utils.RunSH("dependencies", "apk add jq")
+
+	// Setup code remains the same
 	utils.RunSH("dependencies", "curl -L https://github.com/mudler/luet/releases/download/"+*luetVersion+"/luet-"+*luetVersion+"-linux-"+*arch+" --output luet")
 	utils.RunSH("dependencies", "chmod +x luet")
 
@@ -121,113 +122,209 @@ func main() {
 		if err != nil {
 			fmt.Println(string(out))
 			os.Exit(1)
+		} else {
+			fmt.Printf("Successfully logged in to Docker registry %s as user %s\n", dockerEndpoint, dockerUsername)
 		}
 	}
 
+	var err error
 	switch {
 	case *buildPackages:
-		build()
+		err = build()
 	case *createRepo:
-		create()
+		err = create()
 	case *download:
-		downloadMeta()
+		err = downloadMeta()
+	}
+
+	if err != nil {
+		fmt.Println("Error:", err)
+		os.Exit(1)
 	}
 }
 
-func repositoryPackages(repo string) (searchResult client.SearchResult) {
+func repositoryPackages(repo string) (client.SearchResult, error) {
+	var searchResult client.SearchResult
 
 	fmt.Println("Retrieving remote repository packages")
 	tmpdir, err := ioutil.TempDir(os.TempDir(), "ci")
 	if err != nil {
-		panic(err)
+		return searchResult, fmt.Errorf("failed to create temp directory: %w", err)
 	}
 	defer os.RemoveAll(tmpdir)
 
-	d := installer.NewSystemRepository(types.LuetRepository{
+	repoConfig := types.LuetRepository{
 		Name:   repositoryName,
 		Type:   repositoryType,
 		Cached: true,
 		Urls:   []string{repo},
-	})
+	}
+
+	if dockerUsername != "" && dockerPassword != "" {
+		repoConfig.Authentication = map[string]string{
+			"username": dockerUsername,
+			"password": dockerPassword,
+		}
+	}
+
+	d := installer.NewSystemRepository(repoConfig)
 
 	ctx := types.NewContext()
 	ctx.Config.GetSystem().Rootfs = "/"
 	ctx.Config.GetSystem().TmpDirBase = tmpdir
 	re, err := d.Sync(ctx, false)
 	if err != nil {
-		panic(err)
-	} else {
-		for _, p := range re.GetTree().GetDatabase().World() {
-			searchResult.Packages = append(searchResult.Packages, client.Package{
-				Name:     p.GetName(),
-				Category: p.GetCategory(),
-				Version:  p.GetVersion(),
-			})
-		}
-
-		return
+		return searchResult, fmt.Errorf("failed to sync repository: %w", err)
 	}
+
+	for _, p := range re.GetTree().GetDatabase().World() {
+		searchResult.Packages = append(searchResult.Packages, client.Package{
+			Name:     p.GetName(),
+			Category: p.GetCategory(),
+			Version:  p.GetVersion(),
+		})
+	}
+
+	return searchResult, nil
 }
 
-func metaWorker(i int, wg *sync.WaitGroup, c <-chan luetClient.Package, o opData) error {
+func metaWorker(i int, wg *sync.WaitGroup, c <-chan luetClient.Package, o opData, errChan chan<- error) {
 	defer wg.Done()
 
 	for p := range c {
 		tmpdir, err := ioutil.TempDir(os.TempDir(), "ci")
-		checkErr(err)
+		if err != nil {
+			errChan <- fmt.Errorf("worker %d failed to create temp dir: %w", i, err)
+			continue
+		}
+
 		unpackdir, err := ioutil.TempDir(os.TempDir(), "ci")
-		checkErr(err)
-		utils.RunSH("unpack", fmt.Sprintf("TMPDIR=%s XDG_RUNTIME_DIR=%s luet util unpack %s %s", tmpdir, tmpdir, p.ImageMetadata(o.FinalRepo), unpackdir))
-		utils.RunSH("move", fmt.Sprintf("mv %s/* %s/", unpackdir, *outputdir))
-		checkErr(err)
-		os.RemoveAll(tmpdir)
-		os.RemoveAll(unpackdir)
+		if err != nil {
+			os.RemoveAll(tmpdir)
+			errChan <- fmt.Errorf("worker %d failed to create unpack dir: %w", i, err)
+			continue
+		}
+
+		defer func() {
+			os.RemoveAll(tmpdir)
+			os.RemoveAll(unpackdir)
+		}()
+
+		cmd := []string{
+			fmt.Sprintf("TMPDIR=%s XDG_RUNTIME_DIR=%s", tmpdir, tmpdir),
+			"luet",
+			"util",
+			"unpack",
+		}
+
+		if dockerUsername != "" && dockerPassword != "" {
+			cmd = append(cmd,
+				"--auth-username", dockerUsername,
+				"--auth-password", dockerPassword)
+		}
+		cmd = append(cmd, p.ImageMetadata(o.FinalRepo), unpackdir)
+
+		err = utils.RunSH("unpack", strings.Join(cmd, " "))
+		if err != nil {
+			errChan <- fmt.Errorf("worker %d failed to unpack %s: %w", i, p.String(), err)
+			continue
+		}
+
+		err = utils.RunSH("move", fmt.Sprintf("mv %s/* %s/", unpackdir, *outputdir))
+		if err != nil {
+			errChan <- fmt.Errorf("worker %d failed to move files for %s: %w", i, p.String(), err)
+			continue
+		}
 	}
-	return nil
 }
 
-func buildWorker(i int, wg *sync.WaitGroup, c <-chan luetClient.Package, o opData, results chan<- resultData) error {
+func buildWorker(i int, wg *sync.WaitGroup, c <-chan luetClient.Package, o opData, results chan<- resultData, errChan chan<- error) {
 	defer wg.Done()
 
 	for p := range c {
 		fmt.Println("Checking", p)
-		results <- resultData{Package: p, Exists: p.ImageAvailable(o.FinalRepo)}
+		exists, err := func() (bool, error) {
+			defer func() {
+				if r := recover(); r != nil {
+					err := fmt.Errorf("worker %d recovered from panic while checking %s: %v", i, p.String(), r)
+					errChan <- err
+				}
+			}()
+			return p.ImageAvailable(o.FinalRepo), nil
+		}()
+
+		if err != nil {
+			errChan <- err
+			continue
+		}
+
+		results <- resultData{Package: p, Exists: exists}
 	}
-	return nil
 }
 
-func create() {
-	cmd := fmt.Sprintf("luet create-repo --name '%s' --packages %s --tree %s ", repositoryName, *outputdir, *tree)
+func create() error {
+	cmd := []string{
+		"luet",
+		"create-repo",
+		"--name", repositoryName,
+		"--packages", *outputdir,
+		"--tree", *tree,
+	}
+
 	if *push {
-		cmd = cmd + fmt.Sprintf("--output %s --push-images --type docker", finalRepo)
+		cmd = append(cmd,
+			"--output", finalRepo,
+			"--push-images",
+			"--type", "docker")
 	} else {
-		cmd = cmd + fmt.Sprintf("--output %s --type http", *outputdir)
+		cmd = append(cmd,
+			"--output", *outputdir,
+			"--type", "http")
 	}
 
 	if *revisionSHA {
 		out, err := utils.RunSHOUT("date", "date +%Y%m%d%H%M")
-		checkErr(err)
+		if err != nil {
+			return fmt.Errorf("failed to get date: %w", err)
+		}
 		date := strings.TrimSpace(string(out))
+
 		githubSHA := os.Getenv("GITHUB_SHA")
 		shortSHA := githubSHA
-		// Check if the string length is at least 8 characters
 		if len(githubSHA) >= 8 {
-			// Slice the first 8 characters
 			shortSHA = githubSHA[:8]
 		}
-		cmd = cmd + " --snapshot-id " + date + "-git" + shortSHA
+
+		snapshotID := date + "-git" + shortSHA
+		cmd = append(cmd, "--snapshot-id", snapshotID)
+
 		err = utils.RunSH("exportOutput", fmt.Sprintf("echo \"LUET_PUSHED_REPO=%s-git%s\" >> \"$GITHUB_OUTPUT\"", date, shortSHA))
-		checkErr(err)
+		if err != nil {
+			return fmt.Errorf("failed to export output: %w", err)
+		}
 	}
-	utils.RunSH("create_repo", cmd)
+
+	// Execute the command
+	err := utils.RunSH("create_repo", strings.Join(cmd, " "))
+	if err != nil {
+		return fmt.Errorf("failed to create repository: %w", err)
+	}
+
+	return nil
 }
 
-func build() {
+func build() error {
 	packs, err := luetClient.TreePackages(*tree)
-	checkErr(err)
+	if err != nil {
+		return fmt.Errorf("failed to get tree packages: %w", err)
+	}
 
 	if *fromIndex {
-		currentPackages := repositoryPackages(finalRepo)
+		currentPackages, err := repositoryPackages(finalRepo)
+		if err != nil {
+			return fmt.Errorf("failed to get repository packages: %w", err)
+		}
+
 		missingPackages := []client.Package{}
 		skipP := []client.Package{}
 
@@ -250,27 +347,58 @@ func build() {
 			fmt.Println("-", m.String())
 		}
 
+		var buildErrors int
 		for _, p := range missingPackages {
-			buildPackage(p.String())
+			err := buildPackage(p.String())
+			if err != nil {
+				buildErrors++
+				fmt.Printf("Error building package %s: %v\n", p.String(), err)
+			}
 		}
 
-		return
+		if buildErrors > 0 {
+			fmt.Printf("Encountered %d errors during package builds\n", buildErrors)
+			if buildErrors == len(missingPackages) {
+				return fmt.Errorf("all package builds failed")
+			}
+		}
+
+		return nil
 	}
 
+	var buildCount int
+	var buildErrors int
 	for _, p := range packs.Packages {
 		if ((*onlyMissing && !p.ImageAvailable(finalRepo)) || !*onlyMissing) &&
 			(currentPackage != "" && p.EqualSV(currentPackage) || currentPackage == "") {
-			buildPackage(p.String())
+			buildCount++
+			err := buildPackage(p.String())
+			if err != nil {
+				buildErrors++
+				fmt.Printf("Error building package %s: %v\n", p.String(), err)
+			}
 		}
 	}
 
-	utils.RunSH("build perms", "chmod -R 777 "+*outputdir)
+	if buildErrors > 0 {
+		fmt.Printf("Encountered %d errors during package builds\n", buildErrors)
+		if buildErrors == buildCount {
+			return fmt.Errorf("all package builds failed")
+		}
+	}
+
+	err = utils.RunSH("build perms", "chmod -R 777 "+*outputdir)
+	if err != nil {
+		return fmt.Errorf("failed to set permissions on output directory: %w", err)
+	}
+
+	return nil
 }
 
-func buildPackage(s string) {
+func buildPackage(s string) error {
 	fmt.Println("Building", s)
 
-	args := []string{
+	cmd := []string{
 		"luet",
 		"build",
 		"--only-target-package",
@@ -280,50 +408,53 @@ func buildPackage(s string) {
 	}
 
 	if pullRepository != "" {
-		args = append(args, "--pull-repository", pullRepository)
+		cmd = append(cmd, "--pull-repository", pullRepository)
 	}
 
 	if *push {
-		args = append(args, "--push")
+		cmd = append(cmd, "--push")
 	}
 
 	err := utils.RunSH("check-for-buildx", "docker buildx inspect")
 	if err == nil { // buildx is available
-		args = append(args, "--backend-args", "--load")
+		cmd = append(cmd, "--backend-args", "--load")
 	}
 
 	if *platform != "" {
-		args = append(args, "--backend-args", "--platform")
-		args = append(args, "--backend-args", *platform)
+		cmd = append(cmd, "--backend-args", "--platform")
+		cmd = append(cmd, "--backend-args", *platform)
 	}
 
 	if *values != "" {
-		args = append(args, "--values", *values)
+		cmd = append(cmd, "--values", *values)
 	}
 
 	if *pushFinalImages {
-		args = append(args, "--push-final-images")
+		cmd = append(cmd, "--push-final-images")
 	}
 
 	if *pushFinalImagesRepository != "" {
-		args = append(args, "--push-final-images-repository", *pushFinalImagesRepository)
+		cmd = append(cmd, "--push-final-images-repository", *pushFinalImagesRepository)
 	}
 
 	if finalRepo != "" {
-		args = append(args, "--image-repository", finalRepo)
+		cmd = append(cmd, "--image-repository", finalRepo)
 	}
 	if pullRepository != "" {
-		args = append(args, "--pull-repository", pullRepository)
+		cmd = append(cmd, "--pull-repository", pullRepository)
 	}
 	if *tree != "" {
-		args = append(args, "--tree", *tree)
+		cmd = append(cmd, "--tree", *tree)
 	}
-	args = append(args, s)
+	cmd = append(cmd, s)
 
-	checkErr(utils.RunSH("build", strings.Join(args, " ")))
+	err = utils.RunSH("build", strings.Join(cmd, " "))
+	if err != nil {
+		return fmt.Errorf("failed to build package %s: %w", s, err)
+	}
+
+	return nil
 }
-
-var defaultRetries int = 3
 
 func retryList(image string, t int) ([]string, error) {
 	tags, err := crane.ListTags(image)
@@ -342,62 +473,103 @@ func retryList(image string, t int) ([]string, error) {
 func imageTags(tag string) ([]string, error) {
 	return retryList(tag, defaultRetries)
 }
-func retryDownload(img, dest string, t int) error {
-	if err := downloadImg(img, dest); err != nil {
+
+func retryDownload(img, dest string, t int, errChan chan<- error) {
+	err := make(chan error, 1)
+	go downloadImg(img, dest, err)
+
+	downloadErr := <-err
+	if downloadErr != nil {
 		if t <= 0 {
-			return err
+			errChan <- fmt.Errorf("failed downloading '%s' after %d retries: %w", img, defaultRetries, downloadErr)
+			return
 		}
 		fmt.Printf("failed downloading '%s', retrying..\n", img)
 		time.Sleep(time.Duration(defaultRetries-t+1) * time.Second)
-		return retryDownload(img, dest, t-1)
+		retryDownload(img, dest, t-1, errChan)
+		return
 	}
-	return nil
+	errChan <- nil
 }
 
-func downloadImg(img, dst string) error {
+func downloadImg(img, dst string, errChan chan<- error) {
 	tmpdir, err := ioutil.TempDir(os.TempDir(), "ci")
 	if err != nil {
-		return err
+		errChan <- fmt.Errorf("failed to create temp dir for %s: %w", img, err)
+		return
 	}
+
 	unpackdir, err := ioutil.TempDir(os.TempDir(), "ci")
 	if err != nil {
-		return err
+		os.RemoveAll(tmpdir)
+		errChan <- fmt.Errorf("failed to create unpack dir for %s: %w", img, err)
+		return
 	}
-	err = utils.RunSH("unpack", fmt.Sprintf("TMPDIR=%s XDG_RUNTIME_DIR=%s luet util unpack %s %s", tmpdir, tmpdir, img, unpackdir))
+
+	defer func() {
+		os.RemoveAll(tmpdir)
+		os.RemoveAll(unpackdir)
+	}()
+
+	cmd := []string{
+		fmt.Sprintf("TMPDIR=%s XDG_RUNTIME_DIR=%s", tmpdir, tmpdir),
+		"luet",
+		"util",
+		"unpack",
+	}
+
+	if dockerUsername != "" && dockerPassword != "" {
+		cmd = append(cmd,
+			"--auth-username", dockerUsername,
+			"--auth-password", dockerPassword)
+	}
+	cmd = append(cmd, img, unpackdir)
+
+	err = utils.RunSH("unpack", strings.Join(cmd, " "))
 	if err != nil {
-		return err
+		errChan <- fmt.Errorf("failed to unpack %s: %w", img, err)
+		return
 	}
+
 	err = utils.RunSH("move", fmt.Sprintf("mv %s/* %s/", unpackdir, dst))
 	if err != nil {
-		return err
+		errChan <- fmt.Errorf("failed to move files from %s: %w", img, err)
+		return
 	}
-	os.RemoveAll(tmpdir)
-	os.RemoveAll(unpackdir)
-	return nil
+	errChan <- nil
 }
 
-func downloadImage(img, dst string) error {
-	return retryDownload(img, dst, defaultRetries)
+func downloadImage(img, dst string, errChan chan<- error) {
+	retryDownload(img, dst, defaultRetries, errChan)
 }
 
-func downloadMeta() {
-
+func downloadMeta() error {
 	var packs luetClient.SearchResult
+	var err error
+
+	// Get tree packages
+	packs, err = luetClient.TreePackages(*tree)
+	if err != nil {
+		return fmt.Errorf("failed to get tree packages: %w", err)
+	}
 
 	if *downloadAll {
-		var err error
-		packs, err = luetClient.TreePackages(*tree)
-		checkErr(err)
-
 		if *fromIndex {
-			packs = repositoryPackages(finalRepo)
+			packs, err = repositoryPackages(finalRepo)
+			if err != nil {
+				fmt.Printf("Error retrieving repository packages: %v\n", err)
+				// Continue with empty packs rather than returning error
+				packs = luetClient.SearchResult{}
+			}
 		}
 
 		if *downloadFromList {
 			tags, err := imageTags(finalRepo)
-			checkErr(err)
-			var metadata []string
+			if err != nil {
+				return fmt.Errorf("failed to list tags: %w", err)
+			}
 
+			var metadata []string
 			for _, t := range tags {
 				if strings.HasSuffix(t, ".metadata.yaml") {
 					metadata = append(metadata, t)
@@ -409,44 +581,66 @@ func downloadMeta() {
 			if err != nil {
 				value = 5
 			}
+
 			semaphore := make(chan struct{}, value)
 			metaErrors := make(chan error, len(metadata))
+
+			// Start download goroutines
 			for _, m := range metadata {
 				meta := m
 				semaphore <- struct{}{}
 				wg.Add(1)
 				go func(m string) {
-					defer wg.Done()
+					defer func() {
+						<-semaphore
+						wg.Done()
+					}()
+
 					img := fmt.Sprintf("%s:%s", finalRepo, m)
 					fmt.Println("Downloading start", img)
-					err := downloadImage(img, *outputdir)
+					downloadImage(img, *outputdir, metaErrors)
 					fmt.Println("Downloading finished", img)
-					metaErrors <- err
-					<-semaphore
 				}(meta)
 			}
 
+			// Wait for all downloads to complete
 			wg.Wait()
+			close(metaErrors)
 
-			// Check for errors
-			select {
-			case v, ok := <-metaErrors:
-				if ok {
-					checkErr(v)
+			// Collect and handle errors
+			var errCount int
+			for err := range metaErrors {
+				if err != nil {
+					errCount++
+					fmt.Printf("Error downloading metadata: %v\n", err)
 				}
-			default:
 			}
-			return
+
+			if errCount > 0 {
+				fmt.Printf("Encountered %d errors during metadata downloads\n", errCount)
+				if errCount == len(metadata) {
+					return fmt.Errorf("all metadata downloads failed")
+				}
+			}
+
+			// Return early since we're done with downloads
+			return nil
 		}
 	} else {
-		var err error
 		rpacks, err := luetClient.TreePackages(*tree)
-		checkErr(err)
+		if err != nil {
+			return fmt.Errorf("failed to get tree packages: %w", err)
+		}
+
 		missingPackages := luetClient.SearchResult{}
 
-		currentPackages := repositoryPackages(finalRepo)
-		skipP := []client.Package{}
+		currentPackages, err := repositoryPackages(finalRepo)
+		if err != nil {
+			fmt.Printf("Error retrieving repository packages: %v\n", err)
+			currentPackages = client.SearchResult{}
+		}
 
+		skipP := []client.Package{}
 		for _, f := range strings.Fields(*skipPackages) {
 			pack, err := cmdhelpers.ParsePackageStr(f)
 			if err == nil {
@@ -464,24 +658,47 @@ func downloadMeta() {
 		packs = missingPackages
 	}
 
+	// Process packages with workers
 	all := make(chan luetClient.Package)
 	wg := new(sync.WaitGroup)
 
-	for i := 0; i < 1; i++ {
+	workers := 1                                     // Using 1 worker as in the original code
+	errChan := make(chan error, len(packs.Packages)) // Buffer for all possible errors
+
+	// Start workers
+	for i := 0; i < workers; i++ {
 		wg.Add(1)
-		go metaWorker(i, wg, all, opData{FinalRepo: finalRepo})
+		go metaWorker(i, wg, all, opData{FinalRepo: finalRepo}, errChan)
 	}
 
+	// Send packages to workers
 	for _, p := range packs.Packages {
 		all <- p
 	}
 	close(all)
-	wg.Wait()
-}
 
-func checkErr(err error) {
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
+	// Start a goroutine to close the error channel when all workers finish
+	go func() {
+		wg.Wait()
+		close(errChan)
+	}()
+
+	// Collect and handle errors
+	var errCount int
+	for err := range errChan {
+		if err != nil {
+			errCount++
+			fmt.Printf("Error processing package: %v\n", err)
+		}
 	}
+
+	// Decide how to handle errors
+	if errCount > 0 {
+		fmt.Printf("Encountered %d errors during metadata processing\n", errCount)
+		if errCount == len(packs.Packages) {
+			return fmt.Errorf("all packages failed to process")
+		}
+	}
+
+	return nil
 }
