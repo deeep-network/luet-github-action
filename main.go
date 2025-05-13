@@ -389,9 +389,10 @@ func build() error {
 		for _, p := range missingPackages {
 			// Build using the proper package format
 			var packageStr string
+			packageKey := fmt.Sprintf("%s/%s", p.Category, p.Name)
 
 			// For transformed packages (from pkg/ to services/), remove the version
-			if p.Category == "services" && strings.HasPrefix(packageStr, "pkg/") {
+			if p.Category == "services" && strings.HasPrefix(packageKey, "pkg/") {
 				packageStr = fmt.Sprintf("%s/%s", p.Category, p.Name)
 				// Note: version is deliberately omitted for transformed packages
 			} else {
