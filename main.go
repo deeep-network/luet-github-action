@@ -342,33 +342,33 @@ func build() error {
 		uniquePackages := []client.Package{}
 
 		for _, p := range packs.Packages {
-			packageStr := p.String()
-			transformedStr := packageStr
+			// Create a key that identifies this package by category and name (without version)
+			packageKey := fmt.Sprintf("%s/%s", p.Category, p.Name)
+			transformedKey := packageKey
 
 			// Transform pkg/ to services/ if needed
-			if strings.HasPrefix(packageStr, "pkg/") {
-				transformedStr = strings.Replace(packageStr, "pkg/", "services/", 1)
-
-				// Parse the transformed string to check if it's valid
-				transformedPack, err := cmdhelpers.ParsePackageStr(transformedStr)
-				if err != nil {
-					// If transformation is invalid, revert to original
-					transformedStr = packageStr
-				} else {
-					// Create a new package with the transformed category but keeping original metadata
-					p = client.Package{
-						Name:     transformedPack.Name,
-						Category: transformedPack.Category,
-						Version:  p.Version, // Preserve version
-						// Copy any other fields from p that need to be preserved
-					}
+			if strings.HasPrefix(p.Category, "pkg") {
+				// Create a new package with the transformed category but keeping original name and version
+				transformedPackage := client.Package{
+					Name:     p.Name,
+					Category: "services", // Replace "pkg" with "services"
+					Version:  p.Version,  // Preserve version in the Package struct but not in build string
 				}
-			}
 
-			// Only process this package if we haven't seen it before
-			if !processedPackages[transformedStr] {
-				processedPackages[transformedStr] = true
-				uniquePackages = append(uniquePackages, p)
+				// Update the transformed key for deduplication
+				transformedKey = fmt.Sprintf("%s/%s", transformedPackage.Category, transformedPackage.Name)
+
+				// Only process this package if we haven't seen it before
+				if !processedPackages[transformedKey] {
+					processedPackages[transformedKey] = true
+					uniquePackages = append(uniquePackages, transformedPackage)
+				}
+			} else {
+				// Only process this package if we haven't seen it before
+				if !processedPackages[transformedKey] {
+					processedPackages[transformedKey] = true
+					uniquePackages = append(uniquePackages, p)
+				}
 			}
 		}
 
@@ -387,10 +387,19 @@ func build() error {
 
 		var buildErrors int
 		for _, p := range missingPackages {
-			// Here we need to ensure we're using the transformed path for building
-			packageStr := p.String()
-			if strings.HasPrefix(packageStr, "pkg/") {
-				packageStr = strings.Replace(packageStr, "pkg/", "services/", 1)
+			// Build using the proper package format
+			var packageStr string
+
+			// For transformed packages (from pkg/ to services/), remove the version
+			if p.Category == "services" && strings.HasPrefix(packageStr, "pkg/") {
+				packageStr = fmt.Sprintf("%s/%s", p.Category, p.Name)
+				// Note: version is deliberately omitted for transformed packages
+			} else {
+				// For regular packages, include the version as normal
+				packageStr = fmt.Sprintf("%s/%s", p.Category, p.Name)
+				if p.Version != "" {
+					packageStr += "@" + p.Version
+				}
 			}
 
 			err := buildPackage(packageStr)
