@@ -335,20 +335,42 @@ func build() error {
 			}
 		}
 
-		// Create a map to track processed package strings to avoid duplicates
+		// Create maps to track processed packages and transformed packages
 		processedPackages := make(map[string]bool)
+		transformedPackageNames := make(map[string]bool)
 
-		// First pass: Collect unique packages to process (no transformation yet)
+		// First pass: Collect unique packages to process
 		uniquePackages := []client.Package{}
 
+		// First process all pkg/ packages (to be transformed to services/)
 		for _, p := range packs.Packages {
-			// Create a key that identifies this package by category and name (without version)
-			packageKey := fmt.Sprintf("%s/%s", p.Category, p.Name)
+			if p.Category == "pkg" {
+				// Create normalized keys for deduplication
+				nameKey := p.Name // Just the name without category for cross-category deduplication
 
-			// Only process this package if we haven't seen it before
-			if !processedPackages[packageKey] {
-				processedPackages[packageKey] = true
-				uniquePackages = append(uniquePackages, p)
+				// Skip if we've already processed this package name
+				if !transformedPackageNames[nameKey] {
+					transformedPackageNames[nameKey] = true
+
+					// Add to unique packages
+					uniquePackages = append(uniquePackages, p)
+				}
+			}
+		}
+
+		// Then process all other packages, skipping any that were already transformed
+		for _, p := range packs.Packages {
+			if p.Category != "pkg" {
+				// Create a key that identifies this package by category and name (without version)
+				packageKey := fmt.Sprintf("%s/%s", p.Category, p.Name)
+				nameKey := p.Name
+
+				// Skip if we've already seen this exact package or if it's a services/ package
+				// with the same name as a transformed pkg/ package
+				if !processedPackages[packageKey] && !transformedPackageNames[nameKey] {
+					processedPackages[packageKey] = true
+					uniquePackages = append(uniquePackages, p)
+				}
 			}
 		}
 
@@ -370,14 +392,16 @@ func build() error {
 			// Build using the proper package format
 			var packageStr string
 
-			// Transform pkg/ to services/ at build time only
+			// For transformed packages (from pkg/ to services/), remove the version
 			if p.Category == "pkg" {
-				// For packages with pkg category, transform to services and omit version
 				packageStr = fmt.Sprintf("services/%s", p.Name)
-				// Note: version is deliberately omitted
+				// Note: version is deliberately omitted for transformed packages
 			} else {
 				// For regular packages, include the version as normal
-				packageStr = p.String()
+				packageStr = fmt.Sprintf("%s/%s", p.Category, p.Name)
+				if p.Version != "" {
+					packageStr += "@" + p.Version
+				}
 			}
 
 			err := buildPackage(packageStr)
@@ -410,7 +434,7 @@ func build() error {
 				packageStr = fmt.Sprintf("services/%s", p.Name)
 				// Note: version is deliberately omitted
 			} else {
-				packageStr = p.String()
+				packageStr = p.String() // Use the original string for non-pkg packages
 			}
 
 			err := buildPackage(packageStr)
