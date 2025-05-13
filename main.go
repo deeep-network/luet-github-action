@@ -338,37 +338,17 @@ func build() error {
 		// Create a map to track processed package strings to avoid duplicates
 		processedPackages := make(map[string]bool)
 
-		// First pass: Transform packages and collect unique packages to process
+		// First pass: Collect unique packages to process (no transformation yet)
 		uniquePackages := []client.Package{}
 
 		for _, p := range packs.Packages {
 			// Create a key that identifies this package by category and name (without version)
 			packageKey := fmt.Sprintf("%s/%s", p.Category, p.Name)
-			transformedKey := packageKey
 
-			// Transform pkg/ to services/ if needed
-			if strings.HasPrefix(p.Category, "pkg") {
-				// Create a new package with the transformed category but keeping original name and version
-				transformedPackage := client.Package{
-					Name:     p.Name,
-					Category: "services", // Replace "pkg" with "services"
-					Version:  p.Version,  // Preserve version in the Package struct but not in build string
-				}
-
-				// Update the transformed key for deduplication
-				transformedKey = fmt.Sprintf("%s/%s", transformedPackage.Category, transformedPackage.Name)
-
-				// Only process this package if we haven't seen it before
-				if !processedPackages[transformedKey] {
-					processedPackages[transformedKey] = true
-					uniquePackages = append(uniquePackages, transformedPackage)
-				}
-			} else {
-				// Only process this package if we haven't seen it before
-				if !processedPackages[transformedKey] {
-					processedPackages[transformedKey] = true
-					uniquePackages = append(uniquePackages, p)
-				}
+			// Only process this package if we haven't seen it before
+			if !processedPackages[packageKey] {
+				processedPackages[packageKey] = true
+				uniquePackages = append(uniquePackages, p)
 			}
 		}
 
@@ -389,18 +369,15 @@ func build() error {
 		for _, p := range missingPackages {
 			// Build using the proper package format
 			var packageStr string
-			packageKey := fmt.Sprintf("%s/%s", p.Category, p.Name)
 
-			// For transformed packages (from pkg/ to services/), remove the version
-			if p.Category == "services" && strings.HasPrefix(packageKey, "pkg/") {
-				packageStr = fmt.Sprintf("%s/%s", p.Category, p.Name)
-				// Note: version is deliberately omitted for transformed packages
+			// Transform pkg/ to services/ at build time only
+			if p.Category == "pkg" {
+				// For packages with pkg category, transform to services and omit version
+				packageStr = fmt.Sprintf("services/%s", p.Name)
+				// Note: version is deliberately omitted
 			} else {
 				// For regular packages, include the version as normal
-				packageStr = fmt.Sprintf("%s/%s", p.Category, p.Name)
-				if p.Version != "" {
-					packageStr += "@" + p.Version
-				}
+				packageStr = p.String()
 			}
 
 			err := buildPackage(packageStr)
@@ -426,10 +403,20 @@ func build() error {
 		if ((*onlyMissing && !p.ImageAvailable(finalRepo)) || !*onlyMissing) &&
 			(currentPackage != "" && p.EqualSV(currentPackage) || currentPackage == "") {
 			buildCount++
-			err := buildPackage(p.String())
+
+			// Apply transformation for pkg/ to services/ at build time
+			var packageStr string
+			if p.Category == "pkg" {
+				packageStr = fmt.Sprintf("services/%s", p.Name)
+				// Note: version is deliberately omitted
+			} else {
+				packageStr = p.String()
+			}
+
+			err := buildPackage(packageStr)
 			if err != nil {
 				buildErrors++
-				fmt.Printf("Error building package %s: %v\n", p.String(), err)
+				fmt.Printf("Error building package %s: %v\n", packageStr, err)
 			}
 		}
 	}
