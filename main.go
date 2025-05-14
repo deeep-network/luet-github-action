@@ -335,39 +335,45 @@ func build() error {
 			}
 		}
 
-		// Create maps to track processed packages and transformed packages
+		// Create maps to track packages
 		processedPackages := make(map[string]bool)
-		transformedPackageNames := make(map[string]bool)
 
-		// First pass: Collect unique packages to process
+		// First collect all non-pkg packages to build a target category mapping
+		targetCategoryMap := make(map[string]string)
+		for _, p := range packs.Packages {
+			if p.Category != "pkg" {
+				// Map from name to category to help determine target category for pkg/ packages
+				targetCategoryMap[p.Name] = p.Category
+			}
+		}
+
+		// Process all packages with proper category mapping
 		uniquePackages := []client.Package{}
 
-		// First process all pkg/ packages (to be transformed to services/)
+		// First pass: Handle pkg/ packages with special mapping
 		for _, p := range packs.Packages {
 			if p.Category == "pkg" {
-				// Create normalized keys for deduplication
-				nameKey := p.Name // Just the name without category for cross-category deduplication
+				// Create package key for deduplication
+				packageKey := fmt.Sprintf("%s/%s", p.Category, p.Name)
 
-				// Skip if we've already processed this package name
-				if !transformedPackageNames[nameKey] {
-					transformedPackageNames[nameKey] = true
+				// Skip if already processed
+				if !processedPackages[packageKey] {
+					processedPackages[packageKey] = true
 
-					// Add to unique packages
+					// Add to unique packages with mapping information
 					uniquePackages = append(uniquePackages, p)
 				}
 			}
 		}
 
-		// Then process all other packages, skipping any that were already transformed
+		// Second pass: Add all non-pkg packages
 		for _, p := range packs.Packages {
 			if p.Category != "pkg" {
-				// Create a key that identifies this package by category and name (without version)
+				// Create package key for deduplication
 				packageKey := fmt.Sprintf("%s/%s", p.Category, p.Name)
-				nameKey := p.Name
 
-				// Skip if we've already seen this exact package or if it's a services/ package
-				// with the same name as a transformed pkg/ package
-				if !processedPackages[packageKey] && !transformedPackageNames[nameKey] {
+				// Skip if already processed
+				if !processedPackages[packageKey] {
 					processedPackages[packageKey] = true
 					uniquePackages = append(uniquePackages, p)
 				}
@@ -392,9 +398,17 @@ func build() error {
 			// Build using the proper package format
 			var packageStr string
 
-			// For transformed packages (from pkg/ to services/), remove the version
+			// Determine target category for pkg/ packages
 			if p.Category == "pkg" {
-				packageStr = fmt.Sprintf("services/%s", p.Name)
+				// Default to services/ if no matching category is found
+				targetCategory := "services"
+
+				// Check if we have a matching category for this name
+				if mappedCategory, exists := targetCategoryMap[p.Name]; exists {
+					targetCategory = mappedCategory
+				}
+
+				packageStr = fmt.Sprintf("%s/%s", targetCategory, p.Name)
 				// Note: version is deliberately omitted for transformed packages
 			} else {
 				// For regular packages, include the version as normal
@@ -421,6 +435,15 @@ func build() error {
 		return nil
 	}
 
+	// First collect all non-pkg packages to build a target category mapping
+	targetCategoryMap := make(map[string]string)
+	for _, p := range packs.Packages {
+		if p.Category != "pkg" {
+			// Map from name to category to help determine target category for pkg/ packages
+			targetCategoryMap[p.Name] = p.Category
+		}
+	}
+
 	var buildCount int
 	var buildErrors int
 	for _, p := range packs.Packages {
@@ -428,11 +451,19 @@ func build() error {
 			(currentPackage != "" && p.EqualSV(currentPackage) || currentPackage == "") {
 			buildCount++
 
-			// Apply transformation for pkg/ to services/ at build time
+			// Apply transformation for pkg/ packages with smart category mapping
 			var packageStr string
 			if p.Category == "pkg" {
-				packageStr = fmt.Sprintf("services/%s", p.Name)
-				// Note: version is deliberately omitted
+				// Default to services/ if no matching category is found
+				targetCategory := "services"
+
+				// Check if we have a matching category for this name
+				if mappedCategory, exists := targetCategoryMap[p.Name]; exists {
+					targetCategory = mappedCategory
+				}
+
+				packageStr = fmt.Sprintf("%s/%s", targetCategory, p.Name)
+				// Note: version is deliberately omitted for transformed packages
 			} else {
 				packageStr = p.String() // Use the original string for non-pkg packages
 			}
